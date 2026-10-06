@@ -200,3 +200,69 @@ test("/health says unknown rather than inventing a commit", async () => {
   const b = await (await app.request("/health")).json();
   assert.equal(b.commit, "unknown");
 });
+
+// ---------------------------------------------------------------------------
+// Both address forms. did%3Amoltrust%3A... is the same address as
+// did:moltrust:... per RFC 3986, and the previous express-based service answered
+// both. The Hono route matched the raw path, so the encoded form fell through to
+// a plain-text 404 with no resolution metadata - caught by did-vector-018 and
+// -020 minutes after the service was switched onto the image.
+// ---------------------------------------------------------------------------
+
+const ENCODED = "did%3Amoltrust%3Ad34ed796a4dc4698";
+const PLAIN = "did:moltrust:d34ed796a4dc4698";
+
+test("a percent-encoded DID resolves exactly like the plain one", async () => {
+  stubStatus = 200;
+  stubBody = JSON.stringify({
+    "@context": ["https://www.w3.org/ns/did/v1"],
+    id: PLAIN,
+    metadata: { created: "2026-03-16T19:07:34Z",
+                keyAnchor: { chain: "base", tx: "0xde579d2c", block: 43992036 } },
+  });
+  const { app } = load();
+  const a = await app.request(`/1.0/identifiers/${PLAIN}`);
+  const b = await app.request(`/1.0/identifiers/${ENCODED}`);
+  assert.equal(a.status, 200);
+  assert.equal(b.status, 200, "the encoded form must not be a 404");
+  assert.deepEqual(await b.json(), await a.json(),
+    "both forms address the same DID and must answer identically");
+});
+
+test("an encoded malformed identifier is invalidDid, not a bare 404", async () => {
+  stubStatus = 200;
+  const { app } = load();
+  const res = await app.request("/1.0/identifiers/did%3Amoltrust%3Aambassador0001");
+  assert.equal(res.status, 400);
+  const body = await res.json();
+  assert.equal(body.didResolutionMetadata.error, "invalidDid");
+});
+
+test("an encoded unregistered identifier is notFound with a reason code", async () => {
+  stubStatus = 404;
+  const { app } = load();
+  const res = await app.request("/1.0/identifiers/did%3Amoltrust%3A0000000000000000");
+  assert.equal(res.status, 404);
+  assert.equal((await res.json()).didResolutionMetadata.error, "notFound",
+    "a bare 404 carries no reason code and a resolver cannot report it");
+  stubStatus = 200;
+});
+
+test("a foreign method is methodNotSupported, in either form", async () => {
+  stubStatus = 200;
+  const { app } = load();
+  for (const d of ["did:example:123456", "did%3Aexample%3A123456"]) {
+    const res = await app.request(`/1.0/identifiers/${d}`);
+    assert.equal(res.status, 400, `${d} should be 400`);
+    assert.equal((await res.json()).didResolutionMetadata.error, "methodNotSupported",
+      `${d} should be methodNotSupported`);
+  }
+});
+
+test("broken percent-encoding is reported, not thrown", async () => {
+  stubStatus = 200;
+  const { app } = load();
+  const res = await app.request("/1.0/identifiers/did%3Amoltrust%3A%E0%A4%A");
+  assert.equal(res.status, 400);
+  assert.equal((await res.json()).didResolutionMetadata.error, "invalidDid");
+});
