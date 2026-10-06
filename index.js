@@ -39,6 +39,8 @@ function resolutionError(error, message) {
  */
 function fetchDidDocument(did) {
   return new Promise((resolve, reject) => {
+    // encodeURIComponent on a decoded DID, so the registry sees one consistent
+    // form no matter which the caller used.
     const url = `${MOLTRUST_API}/identity/resolve/${encodeURIComponent(did)}`;
     const client = url.startsWith("http://") ? http : https;
     const req = client.get(url, {
@@ -78,8 +80,19 @@ function fetchDidDocument(did) {
  * Universal Resolver driver endpoint.
  * GET /1.0/identifiers/{did}
  */
-app.get("/1.0/identifiers/:did{did:moltrust:.+}", async (c) => {
-  const did = c.req.param("did");
+// Any segment, not a pattern over the raw path. did%3Amoltrust%3A... is the same
+// address as did:moltrust:... per RFC 3986, and a pattern that reads the raw path
+// answers one and not the other - with a plain-text 404 carrying no resolution
+// metadata at all, which is worse than a wrong code.
+app.get("/1.0/identifiers/:did{.+}", async (c) => {
+  // Hono hands back the raw segment, so decode here. A malformed escape is the
+  // caller's problem and is reported as such rather than thrown.
+  let did;
+  try {
+    did = decodeURIComponent(c.req.param("did"));
+  } catch {
+    return c.json(resolutionError("invalidDid", "the path is not valid percent-encoding"), 400);
+  }
 
   if (!did || !did.startsWith("did:moltrust:")) {
     return c.json(resolutionError("methodNotSupported"), 400);
