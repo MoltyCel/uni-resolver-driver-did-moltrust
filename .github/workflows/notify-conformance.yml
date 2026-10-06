@@ -1,0 +1,43 @@
+name: notify-conformance
+
+# A push here changes what the conformance vectors measure, so it should trigger a
+# run in MoltyCel/did-moltrust-conformance rather than waiting for the daily one.
+#
+# Cross-repository triggering needs a token, and the narrow one is the point: this
+# job only has to POST one dispatch, so the token behind
+# CONFORMANCE_DISPATCH_TOKEN should carry contents: write on
+# did-moltrust-conformance and nothing else. Putting MOLTYCEL_GH_WRITE_TOKEN here
+# instead would give every workflow in this repository write access to four
+# repositories in order to send one HTTP request.
+#
+# Without the secret the job is skipped, visibly, rather than failing: the daily
+# schedule in the conformance repository is the cover until then.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  dispatch:
+    if: ${{ secrets.CONFORMANCE_DISPATCH_TOKEN != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: ask did-moltrust-conformance to run
+        env:
+          TOKEN: ${{ secrets.CONFORMANCE_DISPATCH_TOKEN }}
+        run: |
+          code=$(curl -s -o /tmp/out.json -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/MoltyCel/did-moltrust-conformance/dispatches \
+            -d "{\"event_type\":\"upstream-push\",\"client_payload\":{\"repo\":\"${GITHUB_REPOSITORY}\",\"sha\":\"${GITHUB_SHA}\"}}")
+          echo "dispatch -> HTTP $code"
+          # 204 is the only success. Anything else is reported rather than ignored,
+          # so a silently dead trigger cannot look like a quiet one.
+          if [ "$code" != "204" ]; then
+            cat /tmp/out.json
+            exit 1
+          fi
