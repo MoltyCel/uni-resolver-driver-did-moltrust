@@ -24,13 +24,13 @@ The driver is a lightweight Node.js/Hono HTTP service that proxies DID resolutio
 ### Build
 
 ```bash
-docker build -t moltycel/uni-resolver-driver-did-moltrust .
+docker build -t moltrust/driver-did-moltrust .
 ```
 
 ### Run
 
 ```bash
-docker run -p 8080:8080 moltycel/uni-resolver-driver-did-moltrust
+docker run -p 8080:8080 moltrust/driver-did-moltrust
 ```
 
 ### Test
