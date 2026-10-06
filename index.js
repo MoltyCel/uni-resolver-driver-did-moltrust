@@ -6,6 +6,14 @@ const http = require("http");
 const app = new Hono();
 const PORT = parseInt(process.env.PORT || "8080", 10);
 const MOLTRUST_API = process.env.MOLTRUST_API || "https://api.moltrust.ch";
+// Without this a hung registry holds the request open for as long as the socket
+// lives. server.js, which has been serving uresolver.moltrust.ch since
+// 2026-09-20, aborts after 5 s; this driver had no timeout at all.
+const UPSTREAM_TIMEOUT_MS = parseInt(process.env.UPSTREAM_TIMEOUT_MS || "5000", 10);
+// What answers /health. A commit is checkable against the repository; a version
+// string is only as true as whoever last edited it, and the deployed service and
+// the published image both claimed 1.0.0 while behaving differently.
+const BUILD_COMMIT = process.env.BUILD_COMMIT || "unknown";
 
 // §2.2 of the did:moltrust method spec: the method-specific identifier is a
 // lowercase hexadecimal string of exactly 16 characters.
@@ -33,7 +41,10 @@ function fetchDidDocument(did) {
   return new Promise((resolve, reject) => {
     const url = `${MOLTRUST_API}/identity/resolve/${encodeURIComponent(did)}`;
     const client = url.startsWith("http://") ? http : https;
-    client.get(url, { headers: { Accept: "application/json" } }, (res) => {
+    const req = client.get(url, {
+      headers: { Accept: "application/json" },
+      timeout: UPSTREAM_TIMEOUT_MS,
+    }, (res) => {
       let data = "";
       res.on("data", (chunk) => (data += chunk));
       res.on("end", () => {
@@ -53,7 +64,13 @@ function fetchDidDocument(did) {
           reject(new Error(`Registry returned ${res.statusCode}`));
         }
       });
-    }).on("error", reject);
+    });
+    req.on("timeout", () => {
+      const err = new Error(`registry did not answer within ${UPSTREAM_TIMEOUT_MS} ms`);
+      err.code = "upstreamTimeout";
+      req.destroy(err);
+    });
+    req.on("error", reject);
   });
 }
 
@@ -84,13 +101,22 @@ app.get("/1.0/identifiers/:did{did:moltrust:.+}", async (c) => {
     }
 
     const created = didDocument.metadata?.created || null;
+    const didDocumentMetadata = {
+      created,
+      // did:moltrust documents are immutable after registration, so updated
+      // tracks created until mutable documents ship.
+      updated: didDocument.metadata?.updated || created,
+    };
+    // The on-chain anchoring proof. The registry carries it under
+    // metadata.keyAnchor; a resolver that drops it loses the one piece of this
+    // method a relying party can check against a chain.
+    if (didDocument.metadata?.keyAnchor) {
+      didDocumentMetadata.keyAnchor = didDocument.metadata.keyAnchor;
+    }
     const response = {
       didDocument,
       didResolutionMetadata: { contentType: JSON_LD },
-      didDocumentMetadata: {
-        created,
-        updated: created,
-      },
+      didDocumentMetadata,
     };
 
     return c.json(response, 200);
@@ -98,11 +124,24 @@ app.get("/1.0/identifiers/:did{did:moltrust:.+}", async (c) => {
     if (err.code === "invalidDid") {
       return c.json(resolutionError("invalidDid", err.message), 400);
     }
+    if (err.code === "upstreamTimeout") {
+      // 504, not 500: the registry was slow, and this driver is not the thing
+      // that failed. server.js answered the same way.
+      return c.json(resolutionError("internalError", err.message), 504);
+    }
     return c.json(resolutionError("internalError", err.message), 500);
   }
 });
 
-app.get("/health", (c) => c.json({ status: "ok", driver: "did:moltrust", version: "1.1.0" }));
+app.get("/health", (c) => c.json({
+  status: "ok",
+  driver: "did:moltrust",
+  // The commit this image was built from. A maintained version string told us
+  // 1.0.0 for two different codebases that answered a malformed identifier
+  // differently; a commit cannot do that.
+  commit: BUILD_COMMIT,
+  version: require("./package.json").version,
+}));
 
 // Only listen when run directly, so the tests can drive app.fetch in-process.
 if (require.main === module) {

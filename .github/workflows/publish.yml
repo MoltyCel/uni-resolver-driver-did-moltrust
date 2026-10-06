@@ -48,6 +48,8 @@ jobs:
           context: .
           push: true
           platforms: linux/amd64
+          build-args: |
+            BUILD_COMMIT=${{ github.sha }}
           tags: |
             moltrust/driver-did-moltrust:${{ steps.meta.outputs.version }}
             moltrust/driver-did-moltrust:latest
